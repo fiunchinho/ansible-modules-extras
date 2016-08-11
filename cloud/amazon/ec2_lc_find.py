@@ -40,34 +40,22 @@ options:
     description:
       - A Launch Configuration to match
       - It'll be compiled as regex
-    required: false
-  sort:
-    description:
-      - Whether or not to sort the results
-    required: false
-    default: false
+    required: True
   sort_order:
     description:
       - Order in which to sort results.
-      - Only used when the 'sort' parameter is specified.
     choices: ['ascending', 'descending']
     default: 'ascending'
     required: false
-  sort_start:
+  limit:
     description:
-      - Which result to start with (when sorting).
-      - Corresponds to Python slice notation.
-    default: null
-    required: false
-  sort_end:
-    description:
-      - Which result to end with (when sorting).
-      - Corresponds to Python slice notation.
+      - How many results to show.
+      - Corresponds to Python slice notation like list[:limit].
     default: null
     required: false
 requirements:
   - "python >= 2.6"
-  - boto
+  - boto3
 """
 
 EXAMPLES = '''
@@ -76,90 +64,145 @@ EXAMPLES = '''
 # Search for the Launch Configurations that start with "app"
 - ec2_lc_find:
     name_regex: app.*
-    sort: true
     sort_order: descending
-    sort_start: 1
-    sort_end: 2
+    limit: 2
 '''
 
 RETURN = '''
 image_id:
     description: AMI id
-    returned: when AMI found
+    returned: when Launch Configuration was found
     type: string
     sample: "ami-0d75df7e"
 user_data:
     description: User data used to start instance
-    returned: when AMI found
+    returned: when Launch Configuration was found
     type: string
     user_data: "ZXhwb3J0IENMT1VE"
 name:
     description: Name of the AMI
-    returned: when AMI found
+    returned: when Launch Configuration was found
     type: string
     sample: "myapp-v123"
 arn:
     description: Name of the AMI
-    returned: when AMI found
+    returned: when Launch Configuration was found
     type: string
     sample: "arn:aws:autoscaling:eu-west-1:12345:launchConfiguration:d82f050e-e315:launchConfigurationName/yourproject"
 instance_type:
     description: Type of ec2 instance
-    returned: when AMI found
+    returned: when Launch Configuration was found
     type: string
     sample: "t2.small"
+created_time:
+    description: When it was created
+    returned: when Launch Configuration was found
+    type: string
+    sample: "2016-06-29T14:59:22.222000+00:00"
+ebs_optimized:
+    description: Launch Configuration EBS optimized property
+    returned: when Launch Configuration was found
+    type: boolean
+    sample: False
+instance_monitoring:
+    description: Launch Configuration instance monitoring property
+    returned: when Launch Configuration was found
+    type: string
+    sample: {"Enabled": false}
+classic_link_vpc_security_groups:
+    description: Launch Configuration classic link vpc security groups property
+    returned: when Launch Configuration was found
+    type: list
+    sample: []
+block_device_mappings:
+    description: Launch Configuration block device mappings property
+    returned: when Launch Configuration was found
+    type: list
+    sample: []
+keyname:
+    description: Launch Configuration ssh key
+    returned: when Launch Configuration was found
+    type: string
+    sample: mykey
+security_groups:
+    description: Launch Configuration security groups
+    returned: when Launch Configuration was found
+    type: list
+    sample: []
+kernel_id:
+    description: Launch Configuration kernel to use
+    returned: when Launch Configuration was found
+    type: string
+    sample: ''
+ram_disk_id:
+    description: Launch Configuration ram disk property
+    returned: when Launch Configuration was found
+    type: string
+    sample: ''
+associate_public_address:
+    description: Assign public address or not
+    returned: when Launch Configuration was found
+    type: boolean
+    sample: True
 ...
 '''
 
 
 def find_launch_configs(client, module):
     name_regex = module.params.get('name_regex')
-    sort = module.params.get('sort')
     sort_order = module.params.get('sort_order')
-    sort_start = module.params.get('sort_start')
-    sort_end = module.params.get('sort_end')
+    limit = module.params.get('limit')
 
-    launch_configs = client.describe_launch_configurations()
+    paginator = client.get_paginator('describe_launch_configurations')
 
-    if launch_configs['ResponseMetadata'] and launch_configs['ResponseMetadata']['HTTPStatusCode'] == 200:
-        results = []
-        for lc in launch_configs['LaunchConfigurations']:
-            data = {
-                'name': lc['LaunchConfigurationName'],
-                'arn': lc['LaunchConfigurationARN'],
-                'user_data': lc['UserData'],
-                'instance_type': lc['InstanceType'],
-                'image_id': lc['ImageId'],
-            }
-            results.append(data)
-        if name_regex:
-            regex = re.compile(name_regex)
-            results = [result for result in results if regex.match(result['name'])]
-        if sort:
-            results.sort(key=lambda e: e['name'], reverse=(sort_order == 'descending'))
-        try:
-            if sort and sort_start and sort_end:
-                results = results[int(sort_start):int(sort_end)]
-            elif sort and sort_start:
-                results = results[int(sort_start):]
-            elif sort and sort_end:
-                results = results[:int(sort_end)]
-        except TypeError:
-            module.fail_json(msg="Please supply numeric values for sort_start and/or sort_end")
-        module.exit_json(changed=False, results=results)
-    else:
-        module.exit_json(changed=False)
+    response_iterator = paginator.paginate(
+        PaginationConfig={
+            'MaxItems': 1000,
+            'PageSize': 100
+        }
+    )
+
+    for response in response_iterator:
+        response['LaunchConfigurations'] = filter(lambda lc: re.compile(name_regex).match(lc['LaunchConfigurationName']),
+                                                  response['LaunchConfigurations'])
+
+    results = []
+    for lc in response['LaunchConfigurations']:
+        data = {
+            'name': lc['LaunchConfigurationName'],
+            'arn': lc['LaunchConfigurationARN'],
+            'created_time': lc['CreatedTime'],
+            'user_data': lc['UserData'],
+            'instance_type': lc['InstanceType'],
+            'image_id': lc['ImageId'],
+            'ebs_optimized': lc['EbsOptimized'],
+            'instance_monitoring': lc['InstanceMonitoring'],
+            'classic_link_vpc_security_groups': lc['ClassicLinkVPCSecurityGroups'],
+            'block_device_mappings': lc['BlockDeviceMappings'],
+            'keyname': lc['KeyName'],
+            'security_groups': lc['SecurityGroups'],
+            'kernel_id': lc['KernelId'],
+            'ram_disk_id': lc['RamdiskId'],
+            'associate_public_address': lc['AssociatePublicIpAddress'],
+        }
+
+        results.append(data)
+
+    results.sort(key=lambda e: e['name'], reverse=(sort_order == 'descending'))
+
+    if limit:
+        results = results[:int(limit)]
+
+    module.exit_json(changed=False, results=results)
 
 
 def main():
     argument_spec = ec2_argument_spec()
     argument_spec.update(dict(
         region=dict(required=True, aliases=['aws_region', 'ec2_region']),
-        name_regex=dict(required=False),
-        sort=dict(required=False, default=None, type='bool'),
+        name_regex=dict(required=True),
         sort_order=dict(required=False, default='ascending', choices=['ascending', 'descending']),
-        sort_start=dict(required=False),
-        sort_end=dict(required=False),
+        limit=dict(required=False, type='int'),
     )
     )
 
